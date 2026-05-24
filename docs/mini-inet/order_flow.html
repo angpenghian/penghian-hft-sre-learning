@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>mini-inet — Stage 1: Order Flow Through a Matching Engine</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg: #0e1116;
+    --fg: #e6edf3;
+    --muted: #8b949e;
+    --line: #30363d;
+    --accent: #58a6ff;
+    --bid: #3fb950;
+    --ask: #f85149;
+    --trade: #d29922;
+    --panel: #161b22;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    background: var(--bg); color: var(--fg);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 14px; line-height: 1.5;
+  }
+  h1 { margin: 0 0 4px 0; font-size: 22px; font-weight: 600; }
+  h2 { font-size: 14px; margin: 0 0 8px 0; color: var(--muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; }
+  .lead { color: var(--muted); margin: 0 0 20px 0; max-width: 900px; }
+  .controls { display: flex; gap: 8px; align-items: center; margin: 16px 0; }
+  button {
+    background: var(--accent); color: #0e1116; border: 0; border-radius: 6px;
+    padding: 8px 16px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.secondary { background: var(--panel); color: var(--fg); border: 1px solid var(--line); }
+  .step-label { color: var(--muted); font-size: 13px; margin-left: 12px; }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr 360px;
+    gap: 20px;
+    margin-top: 8px;
+  }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px;
+  }
+  .right-col { display: flex; flex-direction: column; gap: 16px; }
+
+  /* SVG architecture */
+  .arch { width: 100%; height: 460px; display: block; }
+  .box-rect { fill: #1c2128; stroke: var(--line); stroke-width: 1.5; }
+  .box-rect.active { stroke: var(--accent); stroke-width: 2.5; }
+  .box-rect.me-active { stroke: var(--trade); stroke-width: 3; fill: #2d2412; }
+  .box-label { fill: var(--fg); font-size: 13px; font-weight: 600; text-anchor: middle; }
+  .box-sub { fill: var(--muted); font-size: 10px; text-anchor: middle; }
+  .wire { stroke: var(--line); stroke-width: 1.5; fill: none; }
+  .wire.tcp { stroke-dasharray: 4 3; }
+  .legend text { fill: var(--muted); font-size: 11px; }
+  .legend line { stroke-width: 2; }
+
+  /* Animated dot */
+  .pkt {
+    r: 7; stroke: #0e1116; stroke-width: 1.5;
+  }
+  .pkt.buy   { fill: var(--bid); }
+  .pkt.sell  { fill: var(--ask); }
+  .pkt.ack   { fill: var(--accent); }
+  .pkt.trade { fill: var(--trade); }
+  .pkt.hidden { opacity: 0; }
+
+  /* Order book */
+  .book { display: flex; flex-direction: column; gap: 2px; font-variant-numeric: tabular-nums; }
+  .book .row { display: grid; grid-template-columns: 60px 1fr 60px; padding: 4px 8px; border-radius: 4px; }
+  .book .row.ask { color: var(--ask); background: rgba(248,81,73,0.06); }
+  .book .row.bid { color: var(--bid); background: rgba(63,185,80,0.06); }
+  .book .row.spread { color: var(--muted); font-size: 11px; justify-content: center; display: flex; padding: 6px 0; border-top: 1px dashed var(--line); border-bottom: 1px dashed var(--line); margin: 4px 0; }
+  .book .label { color: var(--muted); }
+  .book .empty { color: var(--muted); padding: 8px; text-align: center; font-style: italic; }
+  .book .row.flash { animation: flash 0.6s ease-out; }
+  @keyframes flash { from { background: rgba(88,166,255,0.5); } to { /* fall back */ } }
+
+  /* Event stream */
+  .stream { font-size: 12px; max-height: 240px; overflow-y: auto; }
+  .stream .ev { padding: 3px 6px; border-radius: 3px; margin-bottom: 2px; }
+  .stream .ev.ACK   { color: var(--accent); }
+  .stream .ev.TRADE { color: var(--trade); font-weight: 600; }
+  .stream .ev.CANCEL_ACK    { color: var(--bid); }
+  .stream .ev.CANCEL_REJECT { color: var(--ask); }
+  .stream .seq { color: var(--muted); margin-right: 8px; }
+
+  .notes {
+    color: var(--muted); font-size: 13px; margin-top: 16px;
+    border-top: 1px solid var(--line); padding-top: 16px;
+  }
+  .notes b { color: var(--fg); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<h1>mini-inet — Stage 1: order flow through a matching engine</h1>
+<p class="lead">
+  Replicating the Jane Street "Building an Exchange" architecture in Python.
+  A client submits a TCP order to a Port; the Port hands it to the single Matching Engine
+  (in-memory order book on one box); the ME emits a sequenced event that is
+  multicast to every consumer at once — Market Data, Drop, Trade Reporter, and a
+  passive secondary ME. Same stream, deterministic replay, "shoot any consumer in
+  the head" and it rebuilds from seq 0.
+</p>
+
+<div class="controls">
+  <button id="play">▶ Play scenario</button>
+  <button id="reset" class="secondary">Reset</button>
+  <span class="step-label" id="step-label">idle — press Play</span>
+</div>
+
+<div class="layout">
+
+  <!-- LEFT: SVG architecture -->
+  <div class="panel">
+    <h2>Architecture</h2>
+    <svg class="arch" viewBox="0 0 820 460" preserveAspectRatio="xMidYMid meet">
+
+      <!-- Wires (drawn first so they're behind boxes) -->
+      <!-- MSCO -> Port-M -->
+      <path class="wire tcp" d="M 110 110 L 250 110" />
+      <!-- GSCO -> Port-G -->
+      <path class="wire tcp" d="M 110 350 L 250 350" />
+      <!-- Port-M -> ME -->
+      <path class="wire" d="M 340 110 C 400 110 400 200 460 220" />
+      <!-- Port-G -> ME -->
+      <path class="wire" d="M 340 350 C 400 350 400 260 460 240" />
+      <!-- ME -> bus (vertical) -->
+      <path class="wire" d="M 560 230 L 640 230" />
+      <!-- Bus is the vertical line at x=640 -->
+      <path class="wire" d="M 640 60 L 640 410" />
+      <!-- bus -> MD -->
+      <path class="wire" d="M 640 80 L 720 80" />
+      <!-- bus -> Drop -->
+      <path class="wire" d="M 640 180 L 720 180" />
+      <!-- bus -> TR -->
+      <path class="wire" d="M 640 280 L 720 280" />
+      <!-- bus -> Passive ME -->
+      <path class="wire" d="M 640 380 L 720 380" />
+      <!-- ME -> Port-M (ACK back) -->
+      <path class="wire" d="M 460 210 C 400 200 400 130 340 130" />
+      <!-- ME -> Port-G (ACK back) -->
+      <path class="wire" d="M 460 250 C 400 270 400 330 340 330" />
+
+      <!-- Clients -->
+      <g>
+        <rect class="box-rect" id="b-msco" x="20" y="80" width="90" height="60" rx="6"/>
+        <text class="box-label" x="65" y="108">MSCO</text>
+        <text class="box-sub" x="65" y="124">client (buyer)</text>
+      </g>
+      <g>
+        <rect class="box-rect" id="b-gsco" x="20" y="320" width="90" height="60" rx="6"/>
+        <text class="box-label" x="65" y="348">GSCO</text>
+        <text class="box-sub" x="65" y="364">client (seller)</text>
+      </g>
+
+      <!-- Ports -->
+      <g>
+        <rect class="box-rect" id="b-portm" x="250" y="80" width="90" height="60" rx="6"/>
+        <text class="box-label" x="295" y="108">Port-MSCO</text>
+        <text class="box-sub" x="295" y="124">TCP, seq'd</text>
+      </g>
+      <g>
+        <rect class="box-rect" id="b-portg" x="250" y="320" width="90" height="60" rx="6"/>
+        <text class="box-label" x="295" y="348">Port-GSCO</text>
+        <text class="box-sub" x="295" y="364">TCP, seq'd</text>
+      </g>
+
+      <!-- Matching Engine -->
+      <g>
+        <rect class="box-rect" id="b-me" x="460" y="190" width="100" height="80" rx="8"/>
+        <text class="box-label" x="510" y="220">Matching</text>
+        <text class="box-label" x="510" y="238">Engine</text>
+        <text class="box-sub"   x="510" y="256">("Monster")</text>
+      </g>
+
+      <!-- Bus label -->
+      <text class="box-sub" x="640" y="50" text-anchor="middle">UDP multicast bus</text>
+
+      <!-- Consumers -->
+      <g>
+        <rect class="box-rect" id="b-md" x="720" y="55" width="80" height="50" rx="6"/>
+        <text class="box-label" x="760" y="78">MD</text>
+        <text class="box-sub"   x="760" y="94">market data</text>
+      </g>
+      <g>
+        <rect class="box-rect" id="b-drop" x="720" y="155" width="80" height="50" rx="6"/>
+        <text class="box-label" x="760" y="178">Drop</text>
+        <text class="box-sub"   x="760" y="194">clearing</text>
+      </g>
+      <g>
+        <rect class="box-rect" id="b-tr" x="720" y="255" width="80" height="50" rx="6"/>
+        <text class="box-label" x="760" y="278">TR</text>
+        <text class="box-sub"   x="760" y="294">trade reporter</text>
+      </g>
+      <g>
+        <rect class="box-rect" id="b-pme" x="720" y="355" width="80" height="50" rx="6"/>
+        <text class="box-label" x="760" y="378">Passive ME</text>
+        <text class="box-sub"   x="760" y="394">hot standby</text>
+      </g>
+
+      <!-- Animated packet (positioned via JS) -->
+      <circle id="pkt" class="pkt hidden" cx="0" cy="0" />
+      <!-- Fan-out packets for multicast -->
+      <circle id="pkt-fan-md"   class="pkt hidden" cx="0" cy="0" />
+      <circle id="pkt-fan-drop" class="pkt hidden" cx="0" cy="0" />
+      <circle id="pkt-fan-tr"   class="pkt hidden" cx="0" cy="0" />
+      <circle id="pkt-fan-pme"  class="pkt hidden" cx="0" cy="0" />
+
+      <!-- Legend -->
+      <g class="legend" transform="translate(20, 430)">
+        <circle class="pkt buy"   cx="6"   cy="0" /><text x="18"  y="4">buy order</text>
+        <circle class="pkt sell"  cx="100" cy="0" /><text x="112" y="4">sell order</text>
+        <circle class="pkt ack"   cx="200" cy="0" /><text x="212" y="4">ACK</text>
+        <circle class="pkt trade" cx="270" cy="0" /><text x="282" y="4">trade event</text>
+        <line class="wire tcp" x1="370" y1="0" x2="395" y2="0" /><text x="400" y="4">TCP (per-client)</text>
+        <line class="wire"     x1="510" y1="0" x2="535" y2="0" /><text x="540" y="4">multicast / internal</text>
+      </g>
+    </svg>
+  </div>
+
+  <!-- RIGHT: book + stream -->
+  <div class="right-col">
+    <div class="panel">
+      <h2>Order book</h2>
+      <div class="book" id="book"></div>
+    </div>
+    <div class="panel">
+      <h2>Sequenced event stream</h2>
+      <div class="stream" id="stream"></div>
+    </div>
+  </div>
+
+</div>
+
+<div class="notes">
+  <b>What this is showing.</b>
+  The talk's "crazy" single-machine design: one in-memory matching engine, with
+  client-facing Ports doing per-client TCP sequencing and flow control, and an
+  internal UDP multicast bus so that every consumer — the two trade
+  counterparties via their Ports, plus MD, Drop, the Trade Reporter, and the
+  passive secondary ME — sees the same sequenced event at the same moment.
+  Determinism is the whole point: any consumer can crash, replay the stream from
+  a retransmitter, and rebuild identical state. The passive ME listens to the
+  primary's <i>output</i> stream (not raw client UDP) so it deterministically
+  reproduces the same events and can fail over.
+  <br><br>
+  <b>Why this scenario.</b>
+  MSCO BUY 500@3329 rests on the book. GSCO sells 500@3329 — the seller would
+  have accepted 3329, and the resting buy was offering 3329, so they cross and
+  trade at the resting price. (Price improvement always goes to the aggressor —
+  Stage 1's price_improvement_to_aggressor test encodes the Instinet
+  cautionary tale.)
+</div>
+
+<script>
+"use strict";
+
+// --- DOM refs
+const $ = (id) => document.getElementById(id);
+const playBtn  = $("play");
+const resetBtn = $("reset");
+const stepLbl  = $("step-label");
+const pkt      = $("pkt");
+const fanMd    = $("pkt-fan-md");
+const fanDrop  = $("pkt-fan-drop");
+const fanTr    = $("pkt-fan-tr");
+const fanPme   = $("pkt-fan-pme");
+const bookDiv  = $("book");
+const streamDiv= $("stream");
+
+// --- Reusable "engine" mirroring orderbook.py logic in JS for the visual
+class JsBook {
+  constructor() {
+    this.bids = new Map(); // price -> [{id, qty, who}]
+    this.asks = new Map();
+    this.nextId = 1;
+    this.nextSeq = 1;
+    this.events = [];
+  }
+  bestBid() { return this.bids.size ? Math.max(...this.bids.keys()) : null; }
+  bestAsk() { return this.asks.size ? Math.min(...this.asks.keys()) : null; }
+  submit(side, price, qty, who) {
+    const order = { id: this.nextId++, side, price, qty, who };
+    const acks = [{kind: "ACK", payload: {order_id: order.id, side, price, qty, who}}];
+    const trades = [];
+    if (side === "BUY") {
+      while (order.qty > 0 && this.bestAsk() !== null && order.price >= this.bestAsk()) {
+        const best = this.bestAsk();
+        const level = this.asks.get(best);
+        const resting = level[0];
+        const fill = Math.min(order.qty, resting.qty);
+        trades.push({kind:"TRADE", payload:{price: resting.price, qty: fill, aggressor: who, resting: resting.who}});
+        resting.qty -= fill; order.qty -= fill;
+        if (resting.qty === 0) { level.shift(); if (level.length === 0) this.asks.delete(best); }
+      }
+    } else {
+      while (order.qty > 0 && this.bestBid() !== null && order.price <= this.bestBid()) {
+        const best = this.bestBid();
+        const level = this.bids.get(best);
+        const resting = level[0];
+        const fill = Math.min(order.qty, resting.qty);
+        trades.push({kind:"TRADE", payload:{price: resting.price, qty: fill, aggressor: who, resting: resting.who}});
+        resting.qty -= fill; order.qty -= fill;
+        if (resting.qty === 0) { level.shift(); if (level.length === 0) this.bids.delete(best); }
+      }
+    }
+    if (order.qty > 0) {
+      const side_book = side === "BUY" ? this.bids : this.asks;
+      if (!side_book.has(order.price)) side_book.set(order.price, []);
+      side_book.get(order.price).push(order);
+    }
+    const out = [...acks, ...trades].map(e => ({seq: this.nextSeq++, ...e}));
+    this.events.push(...out);
+    return out;
+  }
+}
+
+let book = new JsBook();
+
+// --- Render order book + stream
+function renderBook(flashPrice) {
+  const asks = [...book.asks.keys()].sort((a,b) => b - a); // display highest ask at top
+  const bids = [...book.bids.keys()].sort((a,b) => b - a); // highest bid at top
+  let html = "";
+  if (asks.length === 0 && bids.length === 0) {
+    html = `<div class="empty">(book is empty)</div>`;
+  } else {
+    if (asks.length === 0) html += `<div class="empty">no asks</div>`;
+    for (const p of asks) {
+      const q = book.asks.get(p).reduce((s,o) => s + o.qty, 0);
+      const cls = (flashPrice === p) ? "row ask flash" : "row ask";
+      html += `<div class="${cls}"><span class="label">ASK</span><span></span><span>${q} @ ${p}</span></div>`;
+    }
+    const bb = book.bestBid(), ba = book.bestAsk();
+    if (bb !== null && ba !== null) html += `<div class="row spread">spread ${ba - bb}</div>`;
+    else html += `<div class="row spread">— no two-sided market —</div>`;
+    for (const p of bids) {
+      const q = book.bids.get(p).reduce((s,o) => s + o.qty, 0);
+      const cls = (flashPrice === p) ? "row bid flash" : "row bid";
+      html += `<div class="${cls}"><span class="label">BID</span><span></span><span>${q} @ ${p}</span></div>`;
+    }
+    if (bids.length === 0) html += `<div class="empty">no bids</div>`;
+  }
+  bookDiv.innerHTML = html;
+}
+function renderStream() {
+  let html = "";
+  for (const ev of book.events) {
+    const p = ev.payload;
+    let body = "";
+    if (ev.kind === "ACK") body = `${p.who} ${p.side} ${p.qty}@${p.price}  (oid=${p.order_id})`;
+    else if (ev.kind === "TRADE") body = `${p.aggressor} hit ${p.resting} for ${p.qty}@${p.price}`;
+    else body = JSON.stringify(p);
+    html += `<div class="ev ${ev.kind}"><span class="seq">seq=${String(ev.seq).padStart(2,"0")}</span>${ev.kind.padEnd(6)} ${body}</div>`;
+  }
+  streamDiv.innerHTML = html;
+  streamDiv.scrollTop = streamDiv.scrollHeight;
+}
+
+// --- Box activation helpers
+function activate(id, cls = "active", ms = 600) {
+  const el = $(id);
+  el.classList.add(cls);
+  setTimeout(() => el.classList.remove(cls), ms);
+}
+
+// --- Move pkt along a polyline of points over `dur` ms; returns Promise
+function moveAlong(el, kind, points, dur) {
+  return new Promise(resolve => {
+    el.classList.remove("hidden");
+    el.setAttribute("class", `pkt ${kind}`);
+    const segs = [];
+    let total = 0;
+    for (let i = 0; i < points.length - 1; i++) {
+      const [x1,y1] = points[i], [x2,y2] = points[i+1];
+      const len = Math.hypot(x2-x1, y2-y1);
+      segs.push({x1,y1,x2,y2,len});
+      total += len;
+    }
+    const t0 = performance.now();
+    function step(now) {
+      const t = Math.min(1, (now - t0) / dur);
+      let d = t * total;
+      for (const s of segs) {
+        if (d <= s.len) {
+          const f = d / s.len;
+          el.setAttribute("cx", s.x1 + (s.x2 - s.x1) * f);
+          el.setAttribute("cy", s.y1 + (s.y2 - s.y1) * f);
+          break;
+        }
+        d -= s.len;
+        el.setAttribute("cx", s.x2);
+        el.setAttribute("cy", s.y2);
+      }
+      if (t < 1) requestAnimationFrame(step);
+      else { el.classList.add("hidden"); resolve(); }
+    }
+    requestAnimationFrame(step);
+  });
+}
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// --- Coordinates (match the SVG above)
+const PATHS = {
+  // client -> port
+  msco_to_port: [[110, 110], [250, 110]],
+  gsco_to_port: [[110, 350], [250, 350]],
+  // port -> ME (curve approximated as polyline)
+  portm_to_me: [[340, 110], [400, 150], [460, 220]],
+  portg_to_me: [[340, 350], [400, 310], [460, 240]],
+  // ME -> port (ACK back) — approximations
+  me_to_portm: [[460, 210], [400, 130], [340, 130]],
+  me_to_portg: [[460, 250], [400, 330], [340, 330]],
+  // ME -> bus
+  me_to_bus:   [[560, 230], [640, 230]],
+  // bus -> consumers
+  bus_to_md:   [[640, 230], [640, 80],  [720, 80]],
+  bus_to_drop: [[640, 230], [640, 180], [720, 180]],
+  bus_to_tr:   [[640, 230], [640, 280], [720, 280]],
+  bus_to_pme:  [[640, 230], [640, 380], [720, 380]],
+};
+
+// --- Scenario
+async function runScenario() {
+  playBtn.disabled = true;
+  resetBtn.disabled = true;
+  reset(false);
+
+  // ---- Order 1: MSCO BUY 500 @ 3329 (rests)
+  stepLbl.textContent = "step 1 — MSCO submits BUY 500 @ 3329 over TCP";
+  activate("b-msco");
+  await moveAlong(pkt, "buy", PATHS.msco_to_port, 700);
+  activate("b-portm");
+  await sleep(120);
+
+  stepLbl.textContent = "step 2 — Port hands the order to the ME";
+  await moveAlong(pkt, "buy", PATHS.portm_to_me, 700);
+  activate("b-me", "me-active", 700);
+  await sleep(180);
+
+  // ME accepts — book updates, ACK emitted
+  const ev1 = book.submit("BUY", 3329, 500, "MSCO");
+  renderBook(3329); renderStream();
+
+  stepLbl.textContent = "step 3 — ME emits ACK (seq=1), multicast to everyone simultaneously";
+  // Fanout: ACK to all consumers + back to MSCO
+  await Promise.all([
+    moveAlong(pkt, "ack", PATHS.me_to_portm, 800).then(() => activate("b-msco")),
+    moveAlong(fanMd,   "ack", PATHS.bus_to_md,   800).then(() => activate("b-md")),
+    moveAlong(fanDrop, "ack", PATHS.bus_to_drop, 800).then(() => activate("b-drop")),
+    moveAlong(fanTr,   "ack", PATHS.bus_to_tr,   800).then(() => activate("b-tr")),
+    moveAlong(fanPme,  "ack", PATHS.bus_to_pme,  800).then(() => activate("b-pme")),
+  ]);
+
+  await sleep(600);
+
+  // ---- Order 2: GSCO SELL 500 @ 3329 (crosses, generates TRADE)
+  stepLbl.textContent = "step 4 — GSCO submits SELL 500 @ 3329";
+  activate("b-gsco");
+  await moveAlong(pkt, "sell", PATHS.gsco_to_port, 700);
+  activate("b-portg");
+  await sleep(120);
+
+  stepLbl.textContent = "step 5 — Port forwards to ME";
+  await moveAlong(pkt, "sell", PATHS.portg_to_me, 700);
+  activate("b-me", "me-active", 1000);
+
+  // ME matches — book clears, ACK + TRADE emitted
+  const ev2 = book.submit("SELL", 3329, 500, "GSCO");
+  renderBook(3329); renderStream();
+  await sleep(250);
+
+  stepLbl.textContent = "step 6 — ACK to GSCO + TRADE event fanned out to all consumers";
+  // First: ACK back to GSCO + ACK on the bus
+  await Promise.all([
+    moveAlong(pkt, "ack", PATHS.me_to_portg, 700).then(() => activate("b-gsco")),
+    moveAlong(fanMd,   "ack", PATHS.bus_to_md,   700),
+    moveAlong(fanDrop, "ack", PATHS.bus_to_drop, 700),
+    moveAlong(fanTr,   "ack", PATHS.bus_to_tr,   700),
+    moveAlong(fanPme,  "ack", PATHS.bus_to_pme,  700),
+  ]);
+  await sleep(200);
+
+  // Then: TRADE event fans out to everyone
+  stepLbl.textContent = "step 7 — TRADE @ 3329 — same event, same moment, every consumer";
+  await Promise.all([
+    moveAlong(pkt,     "trade", PATHS.me_to_portm, 900).then(() => activate("b-msco", "active", 900)),
+    moveAlong(fanMd,   "trade", PATHS.bus_to_md,   900).then(() => activate("b-md",   "active", 900)),
+    moveAlong(fanDrop, "trade", PATHS.bus_to_drop, 900).then(() => activate("b-drop", "active", 900)),
+    moveAlong(fanTr,   "trade", PATHS.bus_to_tr,   900).then(() => activate("b-tr",   "active", 900)),
+    moveAlong(fanPme,  "trade", PATHS.bus_to_pme,  900).then(() => activate("b-pme",  "active", 900)),
+  ]);
+  // And to GSCO too
+  await moveAlong(pkt, "trade", PATHS.me_to_portg, 600).then(() => activate("b-gsco"));
+
+  renderBook(); // clear flash
+  stepLbl.textContent = "done — book empty, 3 sequenced events broadcast, all replicas in sync";
+  playBtn.disabled = false;
+  resetBtn.disabled = false;
+}
+
+function reset(rerender = true) {
+  book = new JsBook();
+  if (rerender) {
+    renderBook();
+    renderStream();
+    stepLbl.textContent = "idle — press Play";
+  }
+}
+
+playBtn.addEventListener("click", runScenario);
+resetBtn.addEventListener("click", () => reset(true));
+reset(true);
+</script>
+</body>
+</html>

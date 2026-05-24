@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Private context — contains personal financial / career details, do NOT publish.
+PROJECT_CONTEXT.md
+
+# Claude Code session state
+.claude/
+memory/

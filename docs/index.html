@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>penghian-hft-sre-learning</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  body {
+    margin: 0; padding: 48px 24px;
+    background: #0e1116; color: #e6edf3;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 15px; line-height: 1.6;
+  }
+  .wrap { max-width: 820px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 8px 0; }
+  h2 { font-size: 18px; margin: 32px 0 10px 0; color: #58a6ff; }
+  p { color: #c9d1d9; }
+  .muted { color: #8b949e; }
+  a { color: #58a6ff; }
+  .card {
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 18px 22px; margin: 14px 0;
+  }
+  .tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    background: #1f2937; color: #8b949e; font-size: 12px; margin-right: 6px;
+  }
+  .tag.live { background: #1a4731; color: #3fb950; }
+  .tag.wip  { background: #3a2a14; color: #d29922; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>penghian-hft-sre-learning</h1>
+<p class="muted">
+  Penghian Ang — public lab notes from a 12-week low-latency Linux + exchange-internals
+  study plan, built while job-hunting for HFT / trading-infra SRE roles in APAC.
+</p>
+
+<h2>mini-inet — a simulated exchange built from first principles</h2>
+
+<div class="card">
+  <span class="tag live">Stage 1 — live</span>
+  <strong>Order flow through a matching engine</strong><br>
+  Limit order book + matching engine with price-time priority and
+  price-improvement-to-aggressor. Visualised: client → TCP Port → ME → multicast
+  fan-out to MD, Drop, Trade Reporter, and a passive standby ME.<br>
+  <a href="mini-inet/order_flow.html">Open the Stage 1 visual →</a>
+</div>
+
+<div class="card">
+  <span class="tag wip">Stage 2 — planned</span>
+  <strong>Sequenced event stream + state-machine replication</strong><br>
+  Persisted log of ME events. Consumers replay from seq 0 to rebuild state.
+  "Shoot any one in the head" — restart, replay, identical state.
+</div>
+
+<div class="card">
+  <span class="tag wip">Stage 3 — planned</span>
+  <strong>Per-topic sequence numbers + the cancel-vs-execution race</strong><br>
+  Optimistic concurrency with one transaction in flight per topic. Reproduce the
+  "bow-tie" diagram: ME silently drops a stale-seq cancel; the client emits a
+  sequenced cancel-reject from its own next seq.
+</div>
+
+<div class="card">
+  <span class="tag wip">Stage 4 — planned</span>
+  <strong>Ports, retransmitter, multicast bus, passive ME failover</strong><br>
+  Real TCP ports, an RT that records the stream and answers gap-fills, UDP
+  multicast (or unicast-fanout fallback in cloud), and a passive ME that listens
+  to the primary's output and can fail over.
+</div>
+
+<div class="card">
+  <span class="tag wip">Stage 5 — planned</span>
+  <strong>Cancel/Auction fairies + latency measurement</strong><br>
+  Offloaded stream consumers for cancels and auctions. Tick-to-trade latency
+  measured with HdrHistogram (open-loop, no coordinated omission). Find the
+  cache-miss hot path.
+</div>
+
+<p class="muted" style="margin-top: 32px;">
+  Source on GitHub:
+  <a href="https://github.com/penghian/penghian-hft-sre-learning">penghian/penghian-hft-sre-learning</a>
+</p>
+</div>
+</body>
+</html>
