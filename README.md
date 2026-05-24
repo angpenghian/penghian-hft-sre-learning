@@ -13,9 +13,8 @@ production, 6,000+ VMs / 4–10M DAU), Crypto.com (blockchain node infra across
 - **mini-inet Stage 1 — order flow through a matching engine**:
   [order_flow.html](docs/mini-inet/order_flow.html) (visual)
 
-> If you're reading this on GitHub, the Pages site lives at
-> `https://<user>.github.io/penghian-hft-sre-learning/` once Pages is enabled
-> on `main` → `/docs`.
+> Pages site (once enabled on `main` → `/docs`):
+> https://angpenghian.github.io/penghian-hft-sre-learning/
 
 ## Projects
 
