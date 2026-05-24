@@ -110,9 +110,10 @@
 </p>
 
 <div class="controls">
-  <button id="play">▶ Play scenario</button>
-  <button id="reset" class="secondary">Reset</button>
-  <span class="step-label" id="step-label">idle — press Play</span>
+  <button id="next-btn">▶ Next step (1/7)</button>
+  <button id="play-all-btn" class="secondary">▶▶ Play all</button>
+  <button id="reset-btn" class="secondary">↺ Reset</button>
+  <span class="step-label" id="step-label">click 'Next step' to advance one step at a time, or 'Play all' to watch the whole scenario end-to-end</span>
 </div>
 
 <div class="layout">
@@ -264,8 +265,9 @@
 
 // --- DOM refs
 const $ = (id) => document.getElementById(id);
-const playBtn  = $("play");
-const resetBtn = $("reset");
+const nextBtn    = $("next-btn");
+const playAllBtn = $("play-all-btn");
+const resetBtn   = $("reset-btn");
 const stepLbl  = $("step-label");
 const pkt      = $("pkt");
 const fanMd    = $("pkt-fan-md");
@@ -427,95 +429,121 @@ const PATHS = {
   bus_to_pme:  [[640, 230], [640, 380], [720, 380]],
 };
 
-// --- Scenario
-async function runScenario() {
-  playBtn.disabled = true;
-  resetBtn.disabled = true;
-  reset(false);
+// --- Scenario broken into discrete steps. Each step is one logical phase the
+//     user can pause on and re-read the label / book / event stream.
+const STEPS = [
+  { label: "step 1/7 — MSCO submits BUY 500 @ 3329. Order travels over TCP to its Port.",
+    run: async () => {
+      activate("b-msco", "active", 1400);
+      await moveAlong(pkt, "buy", PATHS.msco_to_port, 1500);
+      activate("b-portm", "active", 1200);
+    }},
+  { label: "step 2/7 — Port-MSCO hands the order to the Matching Engine over the internal bus.",
+    run: async () => {
+      await moveAlong(pkt, "buy", PATHS.portm_to_me, 1500);
+      activate("b-me", "me-active", 1500);
+    }},
+  { label: "step 3/7 — ME accepts the BUY → book updates. ACK (seq=1) is multicast: everyone sees it at the same moment.",
+    run: async () => {
+      book.submit("BUY", 3329, 500, "MSCO");
+      renderBook(3329); renderStream();
+      await Promise.all([
+        moveAlong(pkt,     "ack", PATHS.me_to_portm, 1700).then(() => activate("b-msco", "active", 1200)),
+        moveAlong(fanMd,   "ack", PATHS.bus_to_md,   1700).then(() => activate("b-md",   "active", 1200)),
+        moveAlong(fanDrop, "ack", PATHS.bus_to_drop, 1700).then(() => activate("b-drop", "active", 1200)),
+        moveAlong(fanTr,   "ack", PATHS.bus_to_tr,   1700).then(() => activate("b-tr",   "active", 1200)),
+        moveAlong(fanPme,  "ack", PATHS.bus_to_pme,  1700).then(() => activate("b-pme",  "active", 1200)),
+      ]);
+    }},
+  { label: "step 4/7 — GSCO submits SELL 500 @ 3329. Same TCP path, different Port.",
+    run: async () => {
+      activate("b-gsco", "active", 1400);
+      await moveAlong(pkt, "sell", PATHS.gsco_to_port, 1500);
+      activate("b-portg", "active", 1200);
+    }},
+  { label: "step 5/7 — Port-GSCO forwards the SELL to the ME.",
+    run: async () => {
+      await moveAlong(pkt, "sell", PATHS.portg_to_me, 1500);
+      activate("b-me", "me-active", 1500);
+    }},
+  { label: "step 6/7 — ME matches: SELL crosses the resting BUY. Book clears. ACK (seq=2) is multicast to everyone.",
+    run: async () => {
+      book.submit("SELL", 3329, 500, "GSCO");
+      renderBook(3329); renderStream();
+      await Promise.all([
+        moveAlong(pkt,     "ack", PATHS.me_to_portg, 1700).then(() => activate("b-gsco", "active", 1200)),
+        moveAlong(fanMd,   "ack", PATHS.bus_to_md,   1700),
+        moveAlong(fanDrop, "ack", PATHS.bus_to_drop, 1700),
+        moveAlong(fanTr,   "ack", PATHS.bus_to_tr,   1700),
+        moveAlong(fanPme,  "ack", PATHS.bus_to_pme,  1700),
+      ]);
+    }},
+  { label: "step 7/7 — TRADE @ 3329 (seq=3) — the same event arrives at every consumer at the same moment. Both counterparties, MD, Drop, Trade Reporter, and the passive ME all see it.",
+    run: async () => {
+      await Promise.all([
+        moveAlong(pkt,     "trade", PATHS.me_to_portm, 1800).then(() => activate("b-msco", "active", 1500)),
+        moveAlong(fanMd,   "trade", PATHS.bus_to_md,   1800).then(() => activate("b-md",   "active", 1500)),
+        moveAlong(fanDrop, "trade", PATHS.bus_to_drop, 1800).then(() => activate("b-drop", "active", 1500)),
+        moveAlong(fanTr,   "trade", PATHS.bus_to_tr,   1800).then(() => activate("b-tr",   "active", 1500)),
+        moveAlong(fanPme,  "trade", PATHS.bus_to_pme,  1800).then(() => activate("b-pme",  "active", 1500)),
+      ]);
+      await moveAlong(pkt, "trade", PATHS.me_to_portg, 1300).then(() => activate("b-gsco", "active", 1200));
+      renderBook(); // clear flash
+    }},
+];
 
-  // ---- Order 1: MSCO BUY 500 @ 3329 (rests)
-  stepLbl.textContent = "step 1 — MSCO submits BUY 500 @ 3329 over TCP";
-  activate("b-msco");
-  await moveAlong(pkt, "buy", PATHS.msco_to_port, 700);
-  activate("b-portm");
-  await sleep(120);
+let stepIdx = 0;
+let autoPlaying = false;
 
-  stepLbl.textContent = "step 2 — Port hands the order to the ME";
-  await moveAlong(pkt, "buy", PATHS.portm_to_me, 700);
-  activate("b-me", "me-active", 700);
-  await sleep(180);
+function setControls({nextOn, nextLabel, playAllOn, resetOn}) {
+  nextBtn.disabled    = !nextOn;
+  nextBtn.textContent = nextLabel;
+  playAllBtn.disabled = !playAllOn;
+  resetBtn.disabled   = !resetOn;
+}
 
-  // ME accepts — book updates, ACK emitted
-  const ev1 = book.submit("BUY", 3329, 500, "MSCO");
-  renderBook(3329); renderStream();
-
-  stepLbl.textContent = "step 3 — ME emits ACK (seq=1), multicast to everyone simultaneously";
-  // Fanout: ACK to all consumers + back to MSCO
-  await Promise.all([
-    moveAlong(pkt, "ack", PATHS.me_to_portm, 800).then(() => activate("b-msco")),
-    moveAlong(fanMd,   "ack", PATHS.bus_to_md,   800).then(() => activate("b-md")),
-    moveAlong(fanDrop, "ack", PATHS.bus_to_drop, 800).then(() => activate("b-drop")),
-    moveAlong(fanTr,   "ack", PATHS.bus_to_tr,   800).then(() => activate("b-tr")),
-    moveAlong(fanPme,  "ack", PATHS.bus_to_pme,  800).then(() => activate("b-pme")),
-  ]);
-
-  await sleep(600);
-
-  // ---- Order 2: GSCO SELL 500 @ 3329 (crosses, generates TRADE)
-  stepLbl.textContent = "step 4 — GSCO submits SELL 500 @ 3329";
-  activate("b-gsco");
-  await moveAlong(pkt, "sell", PATHS.gsco_to_port, 700);
-  activate("b-portg");
-  await sleep(120);
-
-  stepLbl.textContent = "step 5 — Port forwards to ME";
-  await moveAlong(pkt, "sell", PATHS.portg_to_me, 700);
-  activate("b-me", "me-active", 1000);
-
-  // ME matches — book clears, ACK + TRADE emitted
-  const ev2 = book.submit("SELL", 3329, 500, "GSCO");
-  renderBook(3329); renderStream();
-  await sleep(250);
-
-  stepLbl.textContent = "step 6 — ACK to GSCO + TRADE event fanned out to all consumers";
-  // First: ACK back to GSCO + ACK on the bus
-  await Promise.all([
-    moveAlong(pkt, "ack", PATHS.me_to_portg, 700).then(() => activate("b-gsco")),
-    moveAlong(fanMd,   "ack", PATHS.bus_to_md,   700),
-    moveAlong(fanDrop, "ack", PATHS.bus_to_drop, 700),
-    moveAlong(fanTr,   "ack", PATHS.bus_to_tr,   700),
-    moveAlong(fanPme,  "ack", PATHS.bus_to_pme,  700),
-  ]);
-  await sleep(200);
-
-  // Then: TRADE event fans out to everyone
-  stepLbl.textContent = "step 7 — TRADE @ 3329 — same event, same moment, every consumer";
-  await Promise.all([
-    moveAlong(pkt,     "trade", PATHS.me_to_portm, 900).then(() => activate("b-msco", "active", 900)),
-    moveAlong(fanMd,   "trade", PATHS.bus_to_md,   900).then(() => activate("b-md",   "active", 900)),
-    moveAlong(fanDrop, "trade", PATHS.bus_to_drop, 900).then(() => activate("b-drop", "active", 900)),
-    moveAlong(fanTr,   "trade", PATHS.bus_to_tr,   900).then(() => activate("b-tr",   "active", 900)),
-    moveAlong(fanPme,  "trade", PATHS.bus_to_pme,  900).then(() => activate("b-pme",  "active", 900)),
-  ]);
-  // And to GSCO too
-  await moveAlong(pkt, "trade", PATHS.me_to_portg, 600).then(() => activate("b-gsco"));
-
-  renderBook(); // clear flash
-  stepLbl.textContent = "done — book empty, 3 sequenced events broadcast, all replicas in sync";
-  playBtn.disabled = false;
-  resetBtn.disabled = false;
+async function runStep() {
+  if (stepIdx >= STEPS.length) return;
+  const s = STEPS[stepIdx];
+  stepLbl.textContent = s.label;
+  setControls({nextOn: false, nextLabel: "▶ running...", playAllOn: false, resetOn: false});
+  await s.run();
+  stepIdx++;
+  if (stepIdx >= STEPS.length) {
+    stepLbl.textContent = "✓ done — book is empty, 3 sequenced events were broadcast, every consumer is in sync. Press Reset to replay.";
+    setControls({nextOn: false, nextLabel: "✓ done", playAllOn: false, resetOn: true});
+    autoPlaying = false;
+    return;
+  }
+  if (autoPlaying) {
+    await sleep(1100);
+    if (autoPlaying) return runStep();
+  }
+  setControls({
+    nextOn: true,
+    nextLabel: "▶ Next step (" + (stepIdx + 1) + "/" + STEPS.length + ")",
+    playAllOn: true,
+    resetOn: true,
+  });
 }
 
 function reset(rerender = true) {
   book = new JsBook();
+  stepIdx = 0;
+  autoPlaying = false;
+  setControls({nextOn: true, nextLabel: "▶ Next step (1/" + STEPS.length + ")", playAllOn: true, resetOn: true});
   if (rerender) {
     renderBook();
     renderStream();
-    stepLbl.textContent = "idle — press Play";
+    stepLbl.textContent = "click 'Next step' to advance one step at a time, or 'Play all' to watch the whole scenario end-to-end";
   }
 }
 
-playBtn.addEventListener("click", runScenario);
+nextBtn.addEventListener("click", runStep);
+playAllBtn.addEventListener("click", () => {
+  autoPlaying = true;
+  runStep();
+});
 resetBtn.addEventListener("click", () => reset(true));
 reset(true);
 </script>
