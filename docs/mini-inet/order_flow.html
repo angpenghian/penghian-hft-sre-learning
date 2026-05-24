@@ -101,7 +101,8 @@
 
 <h1>mini-inet — Stage 1: order flow through a matching engine</h1>
 <p class="lead">
-  Replicating the Jane Street "Building an Exchange" architecture in Python.
+  Replicating the architecture from Brian Nigito's Jane Street talk
+  <a href="https://www.janestreet.com/tech-talks/building-an-exchange/">"How to Build an Exchange"</a> in Python.
   A client submits a TCP order to a Port; the Port hands it to the single Matching Engine
   (in-memory order book on one box); the ME emits a sequenced event that is
   multicast to every consumer at once — Market Data, Drop, Trade Reporter, and a

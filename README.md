@@ -20,12 +20,13 @@ production, 6,000+ VMs / 4–10M DAU), Crypto.com (blockchain node infra across
 
 ### `mini-inet/` — a simulated exchange built from first principles
 
-A Python implementation of the architecture described in Jane Street's
-"Building an Exchange" talk: single in-memory matching engine, per-client TCP
-Ports with sequenced flow control, an internal UDP multicast bus, deterministic
-state-machine replication so any consumer can be "shot in the head" and
-rebuilt by replaying the sequenced stream from seq 0, and a passive secondary
-ME listening to the primary's output for failover.
+A Python implementation of the architecture described by Brian Nigito (Jane
+Street) in [**"How to Build an Exchange"**](https://www.janestreet.com/tech-talks/building-an-exchange/):
+single in-memory matching engine, per-client TCP Ports with sequenced flow
+control, an internal UDP multicast bus, deterministic state-machine
+replication so any consumer can be "shot in the head" and rebuilt by
+replaying the sequenced stream from seq 0, and a passive secondary ME
+listening to the primary's output for failover.
 
 Built in stages — each stage maps to a lesson from the talk and has its own
 write-up and visual. See [mini-inet/README.md](mini-inet/README.md).

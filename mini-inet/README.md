@@ -1,7 +1,8 @@
 # mini-inet
 
 A simulated exchange built from first principles in Python, replicating the
-architecture from Jane Street's "Building an Exchange" talk.
+architecture from Brian Nigito's Jane Street tech talk
+[**"How to Build an Exchange"**](https://www.janestreet.com/tech-talks/building-an-exchange/).
 
 Five build stages, each mapping to a lesson from the talk and shipping with a
 write-up and a visual.
